@@ -1,0 +1,68 @@
+imagePullPolicy: IfNotPresent
+# 写入远程Logstash清单
+logstashs:
+  - logstash-input1.ohops.org:6000
+  - logstash-input2.ohops.org:6000
+  - logstash-input3.ohops.org:6000
+  - logstash-input4.ohops.org:7000
+  - logstash-input5.ohops.org:7000
+  - logstash-input6.ohops.org:7000
+# Metricbeat安装开关及配置
+Metricbeat:
+  enabled: false
+  image: elastic/metricbeat:8.2.0
+  resources:
+    limits:
+      cpu: 100m
+      memory: 200Mi
+    requests:
+      cpu: 100m
+      memory: 200Mi
+
+# Filebea相关t配置
+Filebeat:
+  image: elastic/filebeat:8.2.0
+
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+    requests:
+      cpu: 100m
+      memory: 100Mi
+
+  inputs:
+    javaApp:
+      enabled: false
+    tomcat:
+      enabled: false
+    journald:
+      enabled: false
+    openldap:
+      enabled: false
+    k8sJob:
+      enabled: false
+    oceanbase_slow:
+      enabled: false
+      env_code: prd
+
+  autodiscover:
+    providers:
+      docker:
+        enabled: false
+        namespaces:
+          - kube-system
+          - traefik
+        container_name:
+          - etcd
+        paths:
+          - /var/lib/docker/containers/${data.docker.container.id}/*.log
+
+      kubernetes:
+        enabled: true
+        namespaces:
+          - kube-system
+          - default
+        container_name:
+        paths:
+          - /var/log/containers/${data.kubernetes.pod.name}_${data.kubernetes.namespace}_${data.kubernetes.container.name}-*.log

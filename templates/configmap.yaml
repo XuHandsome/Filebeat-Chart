@@ -1,0 +1,240 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "filebeat.labels" . | indent 4 }}
+data:
+  filebeat.yml: |-
+    filebeat.inputs:
+{{- if .Values.Filebeat.inputs.javaApp.enabled }}
+      - type: filestream
+        id: javaapp
+        fields:
+          log_type: java_app
+        parsers:
+          - multiline:
+              type: pattern
+              pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+              negate: true
+              match: after
+        paths:
+          - /var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/logdir/*/*.log
+{{- end }}
+{{- if .Values.Filebeat.inputs.tomcat.enabled }}
+      - type: filestream
+        id: tomcat
+        fields:
+          log_type: tomcat
+        paths:
+          - /var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/logdir/tomcat/*/access_log.*.log
+{{- end }}
+{{- if .Values.Filebeat.inputs.journald.enabled }}
+      - type: journald
+        id: journald
+        fields:
+          log_type: journald
+        path:
+          - /run/log/journal/*/*.journal
+        seek: cursor
+        processors:
+          - drop_event:
+              when:
+                equals:
+                  syslog.identifier: "run-parts(/etc/cron.hourly)"
+{{- end }}
+{{- if .Values.Filebeat.inputs.openldap.enabled }}
+      - type: filestream
+        id: openldap
+        fields:
+          log_type: app-ldap
+        paths:
+          - /var/lib/kubelet/pods/*/volumes/kubernetes.io~rbd/*/logs/hs_ldap.log
+{{- end }}
+{{- if .Values.Filebeat.inputs.k8sJob.enabled }}
+      - type: filestream
+        id: k8s_job
+        fields:
+          log_type: k8s_job
+        parsers:
+          - multiline:
+              type: pattern
+              pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+              negate: true
+              match: after
+        paths:
+          - /var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/logdir/jobs/*/*.log
+{{- end }}
+{{- if .Values.Filebeat.inputs.oceanbase_slow.enabled }}
+      - type: filestream
+        id: oceanbase
+        fields:
+          log_type: oceanbase_slow
+          env_code: {{ .Values.Filebeat.inputs.oceanbase_slow.env_code }}
+        paths:
+          - /var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/logdir/obproxy_slow.log
+{{- end }}
+    filebeat.autodiscover:
+      providers:
+{{- if .Values.Filebeat.autodiscover.providers.docker.enabled }}
+        - type: docker
+          templates:
+            {{- if or (gt (len .Values.Filebeat.autodiscover.providers.docker.namespaces) 0) (gt (len .Values.Filebeat.autodiscover.providers.docker.container_name) 0) }}
+            - condition.or:
+            {{- end }}
+                {{- range $ns := .Values.Filebeat.autodiscover.providers.docker.namespaces }}
+                - equals:
+                    docker.container.labels.io.kubernetes.pod.namespace: "{{ $ns }}"
+                {{- end }}
+                {{ range $c_name := .Values.Filebeat.autodiscover.providers.docker.container_name }}
+                - equals:
+                    docker.container.labels.io.kubernetes.container.name: "{{ $c_name }}"
+                {{- end }}
+              config:
+                - type: container
+                  fields:
+                    log_type: docker_container
+                  paths:
+                    {{- range $path := .Values.Filebeat.autodiscover.providers.docker.paths }}
+                    - "{{ $path }}"
+                    {{- end}}
+{{- end }}
+{{- if .Values.Filebeat.autodiscover.providers.kubernetes.enabled }}
+        - type: kubernetes
+          templates:
+            {{- if or (gt (len .Values.Filebeat.autodiscover.providers.kubernetes.namespaces) 0) (gt (len .Values.Filebeat.autodiscover.providers.kubernetes.container_name) 0) }}
+            - condition.or:
+            {{- end }}
+                {{- range $ns := .Values.Filebeat.autodiscover.providers.kubernetes.namespaces }}
+                - equals:
+                    kubernetes.namespace: "{{ $ns }}"
+                {{- end -}}
+                {{ range $c_name := .Values.Filebeat.autodiscover.providers.kubernetes.container_name }}
+                - equals:
+                    kubernetes.container.name: "{{ $c_name }}"
+                {{- end}}
+              config:
+                - type: container
+                  fields:
+                    log_type: container_stdout
+                  paths:
+                    {{- range $path := .Values.Filebeat.autodiscover.providers.kubernetes.paths }}
+                    - "{{ $path }}"
+                    {{- end}}
+{{- end }}
+    processors:
+      - add_kubernetes_metadata:
+          when:
+            or:
+              - equals:
+                  fields.log_type: "java_app"
+              - equals:
+                  fields.log_type: "tomcat"
+              - equals:
+                  fields.log_type: "app-ldap"
+          host: ${NODE_NAME}
+          default_indexers.enabled: false
+          default_matchers.enabled: false
+          include_labels: ['app']
+          indexers:
+            - pod_uid: {}
+          matchers:
+            - logs_path:
+                logs_path: '/var/lib/kubelet/pods/'
+                resource_type: 'pod'
+      - add_kubernetes_metadata:
+          when:
+            or:
+              - equals:
+                  fields.log_type: "k8s_job"
+          host: ${NODE_NAME}
+          default_indexers.enabled: false
+          default_matchers.enabled: false
+          indexers:
+            - pod_uid: {}
+          matchers:
+            - logs_path:
+                logs_path: '/var/lib/kubelet/pods/'
+                resource_type: 'pod'
+    output.logstash:
+      {{- $first := true }}
+      hosts: [
+        {{- range $host := .Values.logstashs -}}
+          {{- if $first -}}
+              {{$first = false}}
+          {{- else -}}
+              ,
+          {{- end -}}
+          "{{ $host }}"
+      {{- end -}}
+        ]
+      loadbalance: true
+      ttl: 5m
+    setup:
+      dashboards:
+        enabled: false
+      kibana:
+        host: http://log.ohops.com
+
+{{ if .Values.Metricbeat.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metricbeat-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "metricbeat.labels" . | indent 4 }}
+data:
+  metricbeat.yml: |-
+    metricbeat.config.modules:
+      path: ${path.config}/modules.d/*.yml
+      reload.enabled: false
+
+    metricbeat.autodiscover:
+      providers:
+        - type: kubernetes
+          hints.enabled: true
+          scope: cluster
+          node: ${NODE_NAME}
+          unique: true
+          templates:
+            - config:
+                - module: kubernetes
+                  fields:
+                    log_type: apiserver
+                  add_metadata: true
+                  metricsets:
+                    - apiserver
+                  hosts: ["https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"]
+                  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+                  ssl.certificate_authorities:
+                    - /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  period: 30s
+                - module: kubernetes
+                  add_metadata: true
+                  fields:
+                    log_type: event
+                  metricsets:
+                    - event
+                  period: 10s
+    processors:
+      - add_cloud_metadata: ~
+    output.logstash:
+        hosts: ["logstash-input1.ohops.org:6000", "logstash-input2.ohops.org:6000", "logstash-input3.ohops.org:6000", "logstash-input4.ohops.org:7000", "logstash-input5.ohops.org:7000", "logstash-input6.ohops.org:7000"]
+        {{- $first := true }}
+        hosts: [
+          {{- range $host := .Values.logstashs -}}
+            {{- if $first -}}
+                {{$first = false}}
+            {{- else -}}
+                ,
+            {{- end -}}
+            "{{ $host }}"
+        {{- end -}}
+          ]
+        loadbalance: true
+        ttl: 5m
+{{- end -}}

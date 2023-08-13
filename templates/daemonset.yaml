@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "filebeat.labels" . | indent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "filebeat.labels" . | indent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "filebeat.labels" . | indent 8 }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true # Allows to provide richer host metadata
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      containers:
+        - name: filebeat
+          image: {{ .Values.Filebeat.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          args: [
+            "-c", "/etc/filebeat.yml",
+            "-e",
+          ]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: monitoring
+              containerPort: 5066
+              protocol: TCP
+          resources:
+            limits:
+              cpu: {{ .Values.Filebeat.resources.limits.cpu }}
+              memory: {{ .Values.Filebeat.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.Filebeat.resources.requests.cpu }}
+              memory: {{ .Values.Filebeat.resources.requests.memory }}
+          securityContext:
+            runAsUser: 0
+            # If using Red Hat OpenShift uncomment this:
+            #privileged: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/filebeat.yml
+              readOnly: true
+              subPath: filebeat.yml
+            - name: varlogcontainers
+              mountPath: /var/log/containers
+            - name: varlogpods
+              mountPath: /var/log/pods
+            - name: varlogkubeletpods
+              mountPath: /var/lib/kubelet/pods
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+            - name: filebeatdata
+              mountPath: /usr/share/filebeat/data
+            - name: journallog
+              mountPath: /run/log/journal
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+            - name: dockersock
+              mountPath: "/var/run/docker.sock"
+      volumes:
+        - name: config
+          configMap:
+            defaultMode: 0640
+            name: {{ .Release.Name }}-config
+        - name: varlogcontainers
+          hostPath:
+            path: /var/log/containers
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlogkubeletpods
+          hostPath:
+            path: /var/lib/kubelet/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: filebeatdata
+          hostPath:
+            path: /var/lib/filebeat-data
+            type: DirectoryOrCreate
+        - name: journallog
+          hostPath:
+            path: /run/log/journal
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: dockersock
+          hostPath:
+            path: /var/run/docker.sock
